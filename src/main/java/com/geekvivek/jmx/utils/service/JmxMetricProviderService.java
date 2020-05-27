@@ -8,7 +8,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 
 import com.geekvivek.jmx.utils.exceptions.EmptyJmxMetricListenerListException;
 import com.geekvivek.jmx.utils.interfaces.JmxMetricsListener;
@@ -17,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.management.*;
+import javax.management.openmbean.CompositeDataSupport;
 
 /**
  * A Class to get all the JMX Metrics from JMX MBeanServer. Also this class continuously monitor the MBeanServer
@@ -80,7 +80,7 @@ public class JmxMetricProviderService implements Closeable {
      * @param period       period after which continuously check for metric updates
      * @param unit         unit of time for period and initialDelay
      * @throws EmptyJmxMetricListenerListException throws EmptyMetricUpdateListenerListException when
-     *                                                metricsUpdateListeners is null or empty
+     *                                             metricsUpdateListeners is null or empty
      */
     public void start(long initialDelay, long period, TimeUnit unit) throws EmptyJmxMetricListenerListException {
         if (this.metricsUpdateListeners == null || this.metricsUpdateListeners.size() == 0) {
@@ -119,7 +119,14 @@ public class JmxMetricProviderService implements Closeable {
                 LOG.debug("Metrics : {}", metrics.toString());
 
                 //invoking metric change to listeners for new metrics
-                metrics.forEach(metric -> metricsUpdateListeners.forEach(listener -> listener.metricChange(metric)));
+                metrics.forEach(metric -> metricsUpdateListeners.forEach(listener -> {
+                    try {
+                        listener.metricChange(metric);
+                    }catch (Exception e){
+                        LOG.error("error while calling listener.metricChange for metric:{}, listener:{}",
+                                metric.toString(), listener.getClass().getCanonicalName());
+                    }
+                }));
             } catch (JMException e) {
                 LOG.error("Exception in registering for MBean {}", mbean, e);
             }
@@ -140,35 +147,28 @@ public class JmxMetricProviderService implements Closeable {
      */
     private List<JmxMetric> getMetricsForMBean(final ObjectName mbean) throws JMException {
         MBeanAttributeInfo[] attrInfo = server.getMBeanInfo(mbean).getAttributes();
-        return Arrays.stream(attrInfo)
-                .filter(attr -> isNumber(attr.getType()))
-                .map(attr -> new JmxMetric(mbean, attr, server))
-                .collect(Collectors.toList());
-    }
-
-    private final Set<String> primitiveTypes = new HashSet<>(Arrays.asList("boolean", "char", "byte",
-            "short", "int", "long", "float", "double", "void"));
-    private final Set<String> numberTypes = new HashSet<>(Arrays.asList("byte", "short", "int", "long", "float", "double"));
-
-    /**
-     * returns given type is of type Number or not
-     *
-     * @param type fully qualified java class name or any primitive type names
-     * @return returns given type is of type Number or not
-     */
-    private boolean isNumber(String type) {
-        if (primitiveTypes.contains(type)) {
-            return numberTypes.contains(type);
-        } else {
+        List<JmxMetric> metrics = new ArrayList<>();
+        for (MBeanAttributeInfo attr : attrInfo) {
             try {
-                Class cls = Class.forName(type);
-                return Number.class.isAssignableFrom(cls);
-            } catch (ClassNotFoundException e) {
-                return false;
+                Object value = server.getAttribute(mbean, attr.getName());
+                if (value instanceof Number) {
+                    metrics.add(new JmxMetric(mbean, attr, null, server));
+                }
+                if (value instanceof CompositeDataSupport) {
+                    CompositeDataSupport cd = (CompositeDataSupport) value;
+                    cd.getCompositeType().keySet().stream().forEach(item -> {
+                        Object value1 = cd.get(item);
+                        if (value1 instanceof Number) {
+                            metrics.add(new JmxMetric(mbean, attr, item, server));
+                        }
+                    });
+                }
+            } catch (Exception e) {
+                LOG.error("Error in getting metric value of {} for attr {}", mbean, attr.getName());
             }
         }
+        return metrics;
     }
-
 
     /**
      * Stops the metric provider service and shuts down its thread of execution.

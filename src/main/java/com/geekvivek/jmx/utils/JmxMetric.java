@@ -4,6 +4,7 @@ import com.geekvivek.jmx.utils.exceptions.MetricNotAvailableException;
 import lombok.Getter;
 
 import javax.management.*;
+import javax.management.openmbean.CompositeDataSupport;
 import java.util.Map;
 import java.util.Objects;
 
@@ -17,19 +18,23 @@ public class JmxMetric {
     @Getter
     private final Map<String, String> tags;
     @Getter
-    private final String meterName;
+    private final String attributeName;
+    @Getter
+    private final String itemName;
 
     private final ObjectName mBeanObjectName;
     private final MBeanServer mBeanServer;
 
-    public JmxMetric(ObjectName mBeanObjectName, MBeanAttributeInfo attributeInfo, MBeanServer mBeanServer) {
+
+    public JmxMetric(ObjectName mBeanObjectName, MBeanAttributeInfo attributeInfo, String itemName, MBeanServer mBeanServer) {
         this.mBeanObjectName = mBeanObjectName;
         this.mBeanServer = mBeanServer;
         this.domain = mBeanObjectName.getDomain();
         this.tags = mBeanObjectName.getKeyPropertyList();
         this.type = this.tags.remove("type");
         this.name = this.tags.remove("name");
-        this.meterName = attributeInfo.getName();
+        this.attributeName = attributeInfo.getName();
+        this.itemName = itemName;
     }
 
     /**
@@ -40,9 +45,14 @@ public class JmxMetric {
      */
     public Object getValue() throws MetricNotAvailableException {
         try {
-            return mBeanServer.getAttribute(mBeanObjectName, meterName);
+            Object value = mBeanServer.getAttribute(mBeanObjectName, attributeName);
+            if(itemName != null && value instanceof CompositeDataSupport){
+                return ((CompositeDataSupport)value).get(itemName);
+            }else {
+                return value;
+            }
         } catch (JMException e) {
-            throw new MetricNotAvailableException("metric : " + mBeanObjectName + " is not available now");
+            throw new MetricNotAvailableException("metric is not available now for "+this);
         }
     }
 
@@ -72,23 +82,30 @@ public class JmxMetric {
 
     @Override
     public int hashCode() {
-        return Objects.hash(this.mBeanObjectName, this.meterName);
+        if(this.itemName != null){
+            return Objects.hash(this.mBeanObjectName, this.attributeName, this.itemName);
+        }else {
+            return Objects.hash(this.mBeanObjectName, this.attributeName);
+        }
     }
 
     /**
      * It returns JMX style metric representation in string.
-     * e.g :     {domain}:type={type},name={metric_name},tag1={tag1_value}.{meterName}
+     * e.g :     {domain}:type={type},name={metric_name},tag1={tag1_value}.{meterName}.{itemName*}
      * <p>
-     * Note: the order of type,name and tags are not guaranteed.
+     * Note: the order of type,name and tags are not guaranteed and itemName will added only if the value if of type
+     * CompositeDataSupport
      *
      * @return returns JMX style metric representation in string.
      */
     @Override
     public String toString() {
-        if ("Value".equals(meterName) || "Number".equals(meterName)) {
+        if ("Value".equals(attributeName) || "Number".equals(attributeName)) {
             return mBeanObjectName.toString();
-        } else {
-            return mBeanObjectName.toString() + "." + meterName;
+        } else if(this.itemName == null){
+            return mBeanObjectName.toString() + "." + attributeName;
+        } else{
+            return mBeanObjectName.toString() + "." + attributeName + "." + itemName;
         }
     }
 }
